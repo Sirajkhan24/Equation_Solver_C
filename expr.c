@@ -394,46 +394,126 @@ static Node* reconstruct_addition_tree(TermArray* arr) {
 }
 
 // ============================================================================
+// MULTIPLICATION FLATTENING & RECONSTRUCTION
+// ============================================================================
+
+typedef struct {
+    char var;
+    double exponent;
+} MulVariable;
+
+typedef struct {
+    MulVariable* items;
+    size_t count;
+    size_t capacity;
+} MulVarArray;
+
+static void add_variable_exponent(MulVarArray* arr, char var, double exp) {
+    for (size_t i = 0; i < arr->count; i++) {
+        if (arr->items[i].var == var) {
+            arr->items[i].exponent += exp;
+            return;
+        }
+    }
+    if (arr->count >= arr->capacity) {
+        arr->capacity = (arr->capacity == 0) ? 4 : arr->capacity * 2;
+        arr->items = (MulVarArray*)realloc(arr->items, arr->capacity * sizeof(MulVariable));
+    }
+    arr->items[arr->count++] = (MulVariable){ .var = var, .exponent = exp };
+}
+
+static void collect_multiplication_terms(Node* node, MulVarArray* vars, double* total_coeff) {
+    if (!node) return;
+
+    // Case 1: Sub-multiplication -> Recurse left and right
+    if (node->type == NODE_MUL) {
+        collect_multiplication_terms(node->left, vars, total_coeff);
+        collect_multiplication_terms(node->right, vars, total_coeff);
+        return;
+    }
+
+    // Case 2: Constant factor
+    if (node->type == NODE_CONST) {
+        *total_coeff *= node->val;
+        return;
+    }
+
+    // Case 3: Power term (x^n)
+    if (node->type == NODE_POW && node->left && node->left->type == NODE_VAR &&
+        node->right && node->right->type == NODE_CONST) {
+        add_variable_exponent(vars, node->left->var_name, node->right->val);
+        return;
+    }
+
+    // Case 4: Plain Variable (x)
+    if (node->type == NODE_VAR) {
+        add_variable_exponent(vars, node->var_name, 1.0);
+        return;
+    }
+}
+
+static Node* reconstruct_multiplication_tree(MulVarArray* vars, double total_coeff) {
+    Node* result = NULL;
+
+    // 1. Build variable terms (x^n or x)
+    for (size_t i = 0; i < vars->count; i++) {
+        if (fabs(vars->items[i].exponent) < 1e-9) continue; // x^0 = 1
+
+        Node* var_node = NULL;
+        if (fabs(vars->items[i].exponent - 1.0) < 1e-9) {
+            var_node = create_node(NODE_VAR, 0, vars->items[i].var, NULL, NULL);
+        } else {
+            var_node = create_node(NODE_POW, 0, 0,
+                                   create_node(NODE_VAR, 0, vars->items[i].var, NULL, NULL),
+                                   create_node(NODE_CONST, vars->items[i].exponent, 0, NULL, NULL));
+        }
+
+        if (!result) {
+            result = var_node;
+        } else {
+            result = create_node(NODE_MUL, 0, 0, result, var_node);
+        }
+    }
+
+    // 2. Attach total numeric coefficient if not 1.0 (or if expression is purely constant)
+    if (!result) {
+        return create_node(NODE_CONST, total_coeff, 0, NULL, NULL);
+    }
+
+    if (fabs(total_coeff - 1.0) > 1e-9) {
+        result = create_node(NODE_MUL, 0, 0,
+                             create_node(NODE_CONST, total_coeff, 0, NULL, NULL),
+                             result);
+    }
+
+    return result;
+}
+
+// ============================================================================
 // 4. MAIN SIMPLIFIER ENTRY POINT
 // ============================================================================
 
 Node* simplify_tree(Node* node) {
     if (!node) return NULL;
 
-    // 1. Bottom-up post-order simplify children first
+    // 1. Post-order bottom-up recursion
     node->left = simplify_tree(node->left);
     node->right = simplify_tree(node->right);
 
-    // 2. Exponent simplification for NODE_MUL (x^a * x^b -> x^(a+b), x * x -> x^2)
+    // 2. N-ary Multiplication Collector
     if (node->type == NODE_MUL) {
-        Node* L = node->left;
-        Node* R = node->right;
+        MulVarArray vars = {0};
+        double total_coeff = 1.0;
 
-        // x * x -> x^2
-        if (L && R && L->type == NODE_VAR && R->type == NODE_VAR && L->var_name == R->var_name) {
-            char var = L->var_name;
-            free_tree(node);
-            return create_node(NODE_POW, 0, 0,
-                               create_node(NODE_VAR, 0, var, NULL, NULL),
-                               create_node(NODE_CONST, 2.0, 0, NULL, NULL));
-        }
+        collect_multiplication_terms(node, &vars, &total_coeff);
+        Node* simplified = reconstruct_multiplication_tree(&vars, total_coeff);
 
-        // x^a * x^b -> x^(a+b)
-        if (L && R && L->type == NODE_POW && R->type == NODE_POW &&
-            L->left && R->left && L->left->type == NODE_VAR && R->left->type == NODE_VAR &&
-            L->left->var_name == R->left->var_name &&
-            L->right->type == NODE_CONST && R->right->type == NODE_CONST) {
-
-            double new_pow = L->right->val + R->right->val;
-            char var = L->left->var_name;
-            free_tree(node);
-            return create_node(NODE_POW, 0, 0,
-                               create_node(NODE_VAR, 0, var, NULL, NULL),
-                               create_node(NODE_CONST, new_pow, 0, NULL, NULL));
-        }
+        free(vars.items);
+        free_tree(node); // Safely clean up uncollected binary subtrees
+        return simplified;
     }
 
-    // 3. N-ary Linear Collector for NODE_ADD
+    // 3. N-ary Addition Collector
     if (node->type == NODE_ADD) {
         TermArray arr = {0};
         collect_addition_terms(node, &arr, 1.0);
@@ -441,12 +521,12 @@ Node* simplify_tree(Node* node) {
         Node* simplified = reconstruct_addition_tree(&arr);
 
         free(arr.items);
-        free_tree(node); // Dispose old uncollected binary subtrees safely
+        free_tree(node);
         return simplified;
     }
 
     return node;
-}   
+}  
 
 /* Helper to count nodes in an AST */
 static int count_nodes(Node* node) {
