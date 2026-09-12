@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>C Equation Solver - Documentation</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-color: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent: #38bdf8;
+            --accent-hover: #7dd3fc;
+            --code-bg: #090d16;
+            --border: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            display: flex;
+        }
+
+        /* Sidebar Navigation */
+        sidebar {
+            width: 260px;
+            height: 100vh;
+            background-color: var(--card-bg);
+            border-right: 1px solid var(--border);
+            position: fixed;
+            top: 0;
+            left: 0;
+            overflow-y: auto;
+            padding: 2rem 1rem;
+        }
+
+        sidebar h2 {
+            font-size: 1.2rem;
+            color: var(--accent);
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        sidebar ul {
+            list-style: none;
+        }
+
+        sidebar li {
+            margin-bottom: 0.8rem;
+        }
+
+        sidebar a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.95rem;
+            transition: color 0.2s;
+        }
+
+        sidebar a:hover {
+            color: var(--accent-hover);
+        }
+
+        /* Main Content */
+        main {
+            margin-left: 260px;
+            padding: 3rem 4rem;
+            max-width: 1000px;
+            width: 100%;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-color);
+        }
+
+        p.subtitle {
+            font-size: 1.2rem;
+            color: var(--text-muted);
+            margin-bottom: 2rem;
+        }
+
+        section {
+            margin-bottom: 3rem;
+        }
+
+        h2 {
+            font-size: 1.8rem;
+            color: var(--accent);
+            margin-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+        }
+
+        h3 {
+            font-size: 1.3rem;
+            margin: 1.5rem 0 0.5rem;
+            color: #e2e8f0;
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: #cbd5e1;
+        }
+
+        /* Lists */
+        ul, ol {
+            margin-left: 1.5rem;
+            margin-bottom: 1rem;
+            color: #cbd5e1;
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        /* Code Blocks */
+        pre {
+            background-color: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.2rem;
+            overflow-x: auto;
+            font-family: "Fira Code", Consolas, Monaco, "Courier New", monospace;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+            color: #e2e8f0;
+        }
+
+        code {
+            font-family: "Fira Code", Consolas, Monaco, "Courier New", monospace;
+            background-color: var(--code-bg);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            color: var(--accent);
+            font-size: 0.9rem;
+        }
+
+        pre code {
+            padding: 0;
+            background: none;
+            color: inherit;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1.5rem;
+            background-color: var(--card-bg);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        th, td {
+            padding: 0.8rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            background-color: #334155;
+            color: var(--text-color);
+        }
+
+        .callout {
+            background-color: rgba(56, 189, 248, 0.1);
+            border-left: 4px solid var(--accent);
+            padding: 1rem;
+            border-radius: 0 8px 8px 0;
+            margin-bottom: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Sidebar -->
+    <sidebar>
+        <h2>EqSolver C</h2>
+        <ul>
+            <li><a href="#overview">Overview</a></li>
+            <li><a href="#capabilities">Capabilities</a></li>
+            <li><a href="#architecture">Architecture & AST</a></li>
+            <li><a href="#api-reference">API Reference</a></li>
+            <li><a href="#integration-rules">Integration Rules</a></li>
+            <li><a href="#quick-start">Quick Start & Example</a></li>
+            <li><a href="#compilation">Compilation Guide</a></li>
+        </ul>
+    </sidebar>
+
+    <!-- Main Content -->
+    <main>
+        <h1>C Equation Solver Library</h1>
+        <p class="subtitle">A modular C framework for AST parsing, evaluation, symbolic calculus, and numerical integration.</p>
+
+        <!-- Overview -->
+        <section id="overview">
+            <h2>Overview</h2>
+            <p>
+                <strong>EqSolver C</strong> is a lightweight C library that parses single-variable mathematical expressions into an <strong>Abstract Syntax Tree (AST)</strong>.
+            </p>
+            <p>
+                The tree engine provides numeric evaluation $y = f(x)$, symbolic differentiation $\frac{dy}{dx}$, rule-based <strong>symbolic integration</strong> $\int f(x) dx$, and <strong>numerical integration</strong> using Simpson's 1/3 Rule.
+            </p>
+        </section>
+
+        <!-- Capabilities -->
+        <section id="capabilities">
+            <h2>Capabilities</h2>
+            <div class="callout">
+                <p><strong>Supported Operations:</strong></p>
+                <ul>
+                    <li><strong>Operators:</strong> Addition (<code>+</code>), Subtraction (<code>-</code>), Multiplication (<code>*</code>), Division (<code>/</code>), Power (<code>^</code>)</li>
+                    <li><strong>Functions:</strong> Exponential function (<code>exp(...)</code>)</li>
+                    <li><strong>Operands:</strong> Constants (e.g., <code>5</code>, <code>3.14</code>) and single variable (e.g., <code>x</code>)</li>
+                </ul>
+            </div>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th>Method / Engine</th>
+                        <th>Functionality</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Infix Parsing</strong></td>
+                        <td>Shunting-Yard algorithm</td>
+                        <td>Converts <code>"3 * x^2 + exp(x)"</code> $\to$ AST</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Numeric Evaluation</strong></td>
+                        <td>Recursive AST Traversal</td>
+                        <td>Computes $y = f(x)$ given $x$</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Symbolic Differentiation</strong></td>
+                        <td>Product, Quotient, & Chain Rules</td>
+                        <td>Constructs $\frac{dy}{dx}$ derivative tree</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Symbolic Integration</strong></td>
+                        <td>Pattern matching & rule resolution</td>
+                        <td>Generates antiderivative AST $\int f(x) dx$</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Numerical Integration</strong></td>
+                        <td>Simpson's 1/3 Rule</td>
+                        <td>Definite integral $\int_{a}^{b} f(x) dx$ over $n$ subintervals</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Architecture -->
+        <section id="architecture">
+            <h2>Architecture & Expression Tree</h2>
+            <p>Equations are represented in memory using a binary <code>Node</code> tree. Operators form internal branch nodes, while constants and variables exist as leaf nodes.</p>
+
+            <h3>The Node Structure</h3>
+            <pre><code>typedef enum {
+    NODE_CONST, NODE_VAR, NODE_ADD,
+    NODE_SUB,   NODE_MUL, NODE_DIV,
+    NODE_POW,   NODE_EXP
+} NodeType;
+
+typedef struct Node {
+    NodeType type;
+    double val;            /* Active if type == NODE_CONST */
+    char var_name;         /* Active if type == NODE_VAR */
+    struct Node *left;     /* Left sub-tree / operand */
+    struct Node *right;    /* Right sub-tree / operand */
+} Node;</code></pre>
+        </section>
+
+        <!-- API Reference -->
+        <section id="api-reference">
+            <h2>API Reference</h2>
+
+            <h3>1. Parser Interface (<code>parser.h</code>)</h3>
+            <pre><code>Node* parse_expression(const char* expr);</code></pre>
+            <p>Parses an infix mathematical equation string and returns the root pointer to the AST.</p>
+
+            <h3>2. Tree Evaluation (<code>expr.h</code>)</h3>
+            <pre><code>double evaluate(Node* node, double x_val);</code></pre>
+            <p>Recursively evaluates the AST by substituting <code>x_val</code> for variable nodes.</p>
+
+            <h3>3. Calculus Functions (<code>expr.h</code>)</h3>
+            <pre><code>Node* differentiate(Node* node, char var);</code></pre>
+            <p>Constructs a new AST representing the symbolic derivative with respect to <code>var</code>.</p>
+
+            <pre><code>Node* integrate(Node* node, char var);</code></pre>
+            <p>Constructs a new AST representing the symbolic antiderivative with respect to <code>var</code>.</p>
+
+            <pre><code>double integrate_numerical(Node* root, double a, double b, int n);</code></pre>
+            <p>Calculates the definite integral $\int_{a}^{b} f(x) dx$ using Simpson's 1/3 Rule with <code>n</code> subintervals.</p>
+
+            <h3>4. Utilities & Memory (<code>expr.h</code>)</h3>
+            <pre><code>void print_inorder(Node* node);  /* Prints infix equation to stdout */
+void free_tree(Node* node);       /* Deallocates dynamic memory for AST */
+Node* copy_tree(Node* node);      /* Creates a deep copy of an AST */</code></pre>
+        </section>
+
+        <!-- Integration Rules -->
+        <section id="integration-rules">
+            <h2>Symbolic Integration Rules</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Term Pattern</th>
+                        <th>Integration Rule</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Constant ($c$)</td>
+                        <td>$\int c \, dx = c \cdot x$</td>
+                    </tr>
+                    <tr>
+                        <td>Variable ($x$)</td>
+                        <td>$\int x \, dx = 0.5 \cdot x^2$</td>
+                    </tr>
+                    <tr>
+                        <td>Power Rule ($x^n$)</td>
+                        <td>$\int x^n \, dx = \frac{x^{n+1}}{n+1} \quad (n \neq -1)$</td>
+                    </tr>
+                    <tr>
+                        <td>Exponential ($\exp(x)$)</td>
+                        <td>$\int e^x \, dx = e^x$</td>
+                    </tr>
+                    <tr>
+                        <td>Scaled Exponential ($\exp(c \cdot x)$)</td>
+                        <td>$\int e^{c \cdot x} \, dx = \frac{1}{c} e^{c \cdot x}$</td>
+                    </tr>
+                    <tr>
+                        <td>Linear Sum ($\int (f \pm g)$)</td>
+                        <td>$\int f \, dx \pm \int g \, dx$</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Quick Start -->
+        <section id="quick-start">
+            <h2>Quick Start & Example</h2>
+            <pre><code>#include &lt;stdio.h&gt;
+#include "expr.h"
+#include "parser.h"
+
+int main(void) {
+    const char* equation = "3 * x^2 + exp(x) + 5";
+    
+    // 1. Parse String to AST
+    Node* root = parse_expression(equation);
+
+    // 2. Symbolic Integration
+    Node* integral = integrate(root, 'x');
+    printf("∫ f(x) dx = ");
+    print_inorder(integral);
+    printf(" + C\n");
+
+    // 3. Evaluate Symbolic Definite Integral [0, 2]
+    double F_b = evaluate(integral, 2.0);
+    double F_a = evaluate(integral, 0.0);
+    printf("Definite Integral (Symbolic): %.4f\n", F_b - F_a);
+
+    // 4. Numerical Simpson's Integration [0, 2]
+    double num_result = integrate_numerical(root, 0.0, 2.0, 1000);
+    printf("Definite Integral (Simpson's): %.4f\n", num_result);
+
+    // 5. Cleanup
+    free_tree(root);
+    free_tree(integral);
+
+    return 0;
+}</code></pre>
+        </section>
+
+        <!-- Compilation -->
+        <section id="compilation">
+            <h2>Compilation Guide</h2>
+            <p>Compile all source files together using <code>gcc</code>, linking the standard math library (<code>-lm</code>):</p>
+            
+            <pre><code>gcc -Wall -Wextra main.c expr.c parser.c -o solver -lm
+./solver</code></pre>
+        </section>
+    </main>
+
+</body>
+</html>
