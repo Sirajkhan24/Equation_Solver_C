@@ -118,6 +118,15 @@ Node* differentiate(Node* node, char var) {
                                                pow_term);
                 return create_node(NODE_MUL, 0, 0, coeff_term, differentiate(node->left, var));
             }
+
+            /* Exponential Rule for constant base (a^u): (a^u)' = ln(a) * a^u * u' */
+            if (node->left && node->left->type == NODE_CONST) {
+                double a = node->left->val;
+                Node* ln_base = create_node(NODE_CONST, log(a), 0, NULL, NULL);
+                Node* pow_term = create_node(NODE_MUL, 0, 0, ln_base, copy_tree(node));
+                return create_node(NODE_MUL, 0, 0, pow_term, differentiate(node->right, var));
+            }
+
             return create_node(NODE_CONST, 0.0, 0, NULL, NULL);
 
         default:

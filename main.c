@@ -13,7 +13,7 @@ int main(void) {
 
     
     // 1. Define initial equation string f(x)
-    const char* original_str = "2^x + 2^x";
+    const char* original_str = "4^x * 4^x";
     double test_x = 2.0;
 
     // 2. Parse string into AST f(x) and simplify initial structure
@@ -26,8 +26,12 @@ int main(void) {
     double val_fx = evaluate(f_x, test_x);
     printf(" f(%.1f) = %.4f\n\n", test_x, val_fx);
 
+    Node* f_x_diff = differentiate(f_x, 'x');
+    f_x_diff = simplify_full(f_x_diff);
+    printf(" diff f(x): ");
+    print_inorder(f_x_diff);
 
-    // Clean up memory
+    // Clean up memory  
     free_tree(f_x);
     return 0;
 }
