@@ -13,7 +13,7 @@ int main(void) {
 
     
     // 1. Define initial equation string f(x)
-    const char* original_str = "x + x^3 * x + x^4 + x + x^2*x^2";
+    const char* original_str = "3*x^3 * 4 * x^2";
     double test_x = 2.0;
 
     // 2. Parse string into AST f(x) and simplify initial structure

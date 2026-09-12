@@ -262,106 +262,191 @@ static inline Node* make_mul_const(double coeff, Node* term) {
                        term);
 }
 
+
 // ============================================================================
-// 3. MULTIPLICATION SIMPLIFIER
+// 1. TERM COLLECTION STRUCTURES
 // ============================================================================
 
-static Node* simplify_mul(Node* node) {
-    Node* L = node->left;
-    Node* R = node->right;
+typedef struct {
+    char var;        // Variable name ('x', 'y', or 0 for constant)
+    double exponent; // Exponent (1.0 for x, 0.0 for const, n for x^n)
+    double coeff;    // Aggregated numeric multiplier
+} Term;
 
-    // x^a * x^b -> x^(a + b)
-    if (is_pow(L, 0, 0, false) && is_pow(R, L->left->var_name, 0, false)) {
-        double new_pow = L->right->val + R->right->val;
-        char var = L->left->var_name;
-        free_tree(node);
-        return make_pow(var, new_pow);
+typedef struct {
+    Term* items;
+    size_t count;
+    size_t capacity;
+} TermArray;
+
+static void append_term(TermArray* arr, char var, double exp, double coeff) {
+    // Combine with an existing term if variable and power match
+    for (size_t i = 0; i < arr->count; i++) {
+        if (arr->items[i].var == var && fabs(arr->items[i].exponent - exp) < 1e-9) {
+            arr->items[i].coeff += coeff;
+            return;
+        }
     }
-
-    // x^a * x -> x^(a + 1)
-    if (is_pow(L, 0, 0, false) && is_var(R, L->left->var_name)) {
-        double new_pow = L->right->val + 1.0;
-        char var = R->var_name;
-        free_tree(node);
-        return make_pow(var, new_pow);
+    // Expand buffer if needed
+    if (arr->count >= arr->capacity) {
+        arr->capacity = (arr->capacity == 0) ? 8 : arr->capacity * 2;
+        arr->items = (Term*)realloc(arr->items, arr->capacity * sizeof(Term));
     }
-
-    // x * x^a -> x^(a + 1)
-    if (is_var(L, 0) && is_pow(R, L->var_name, 0, false)) {
-        double new_pow = R->right->val + 1.0;
-        char var = L->var_name;
-        free_tree(node);
-        return make_pow(var, new_pow);
-    }
-
-    // x * x -> x^2
-    if (is_var(L, 0) && is_var(R, L->var_name)) {
-        char var = L->var_name;
-        free_tree(node);
-        return make_pow(var, 2.0);
-    }
-
-    return node;
+    arr->items[arr->count++] = (Term){ .var = var, .exponent = exp, .coeff = coeff };
 }
 
 // ============================================================================
-// 4. ADDITION SIMPLIFIER
+// 2. TREE FLATTENING (N-ARY ADDITION RECURSION)
 // ============================================================================
 
-static Node* simplify_add(Node* node) {
-    Node* L = node->left;
-    Node* R = node->right;
+static void collect_addition_terms(Node* node, TermArray* arr, double scale) {
+    if (!node) return;
 
-    // x^n + x^n -> 2 * x^n
-    if (is_pow(L, 0, 0, false) && is_pow(R, L->left->var_name, L->right->val, true)) {
-        Node* term = L;
-        node->left = NULL; // detach so free_tree doesn't destroy L
-        free_tree(node);
-        return make_mul_const(2.0, term);
+    // Case 1: Sub-addition -> Recurse down both sides
+    if (node->type == NODE_ADD) {
+        collect_addition_terms(node->left, arr, scale);
+        collect_addition_terms(node->right, arr, scale);
+        return;
     }
 
-    // c1*x^n + x^n -> (c1 + 1)*x^n
-    if (L && L->type == NODE_MUL && is_const(L->left, 0, false) &&
-        is_pow(L->right, 0, 0, false) &&
-        is_pow(R, L->right->left->var_name, L->right->right->val, true)) {
-        
-        double new_coeff = L->left->val + 1.0;
-        Node* term = R;
-        node->right = NULL;
-        free_tree(node);
-        return make_mul_const(new_coeff, term);
+    // Case 2: Scaled term -> c * x^n or c * x
+    if (node->type == NODE_MUL && node->left && node->left->type == NODE_CONST) {
+        double current_coeff = node->left->val * scale;
+        Node* term = node->right;
+
+        if (term->type == NODE_VAR) {
+            append_term(arr, term->var_name, 1.0, current_coeff);
+            return;
+        }
+        if (term->type == NODE_POW && term->left && term->left->type == NODE_VAR &&
+            term->right && term->right->type == NODE_CONST) {
+            append_term(arr, term->left->var_name, term->right->val, current_coeff);
+            return;
+        }
     }
 
-    // Symmetric case: x^n + c1*x^n -> (c1 + 1)*x^n
-    if (R && R->type == NODE_MUL && is_const(R->left, 0, false) &&
-        is_pow(R->right, 0, 0, false) &&
-        is_pow(L, R->right->left->var_name, R->right->right->val, true)) {
-        
-        double new_coeff = R->left->val + 1.0;
-        Node* term = L;
-        node->left = NULL;
-        free_tree(node);
-        return make_mul_const(new_coeff, term);
+    // Case 3: Unscaled Power -> x^n
+    if (node->type == NODE_POW && node->left && node->left->type == NODE_VAR &&
+        node->right && node->right->type == NODE_CONST) {
+        append_term(arr, node->left->var_name, node->right->val, scale);
+        return;
     }
 
-    return node;
+    // Case 4: Single Variable -> x
+    if (node->type == NODE_VAR) {
+        append_term(arr, node->var_name, 1.0, scale);
+        return;
+    }
+
+    // Case 5: Bare Constant
+    if (node->type == NODE_CONST) {
+        append_term(arr, 0, 0.0, node->val * scale);
+        return;
+    }
 }
 
 // ============================================================================
-// 5. MAIN ENTRY POINT
+// 3. CANONICAL TREE RECONSTRUCTION
+// ============================================================================
+
+static Node* build_term_node(Term t) {
+    // Constant term
+    if (t.var == 0 || t.exponent == 0.0) {
+        return create_node(NODE_CONST, t.coeff, 0, NULL, NULL);
+    }
+
+    // Base variable or power node: x vs x^n
+    Node* base = NULL;
+    if (fabs(t.exponent - 1.0) < 1e-9) {
+        base = create_node(NODE_VAR, 0, t.var, NULL, NULL);
+    } else {
+        base = create_node(NODE_POW, 0, 0,
+                           create_node(NODE_VAR, 0, t.var, NULL, NULL),
+                           create_node(NODE_CONST, t.exponent, 0, NULL, NULL));
+    }
+
+    // Return term directly if coefficient is 1.0
+    if (fabs(t.coeff - 1.0) < 1e-9) {
+        return base;
+    }
+
+    // Wrap with multiplier node: c * base
+    return create_node(NODE_MUL, 0, 0,
+                       create_node(NODE_CONST, t.coeff, 0, NULL, NULL),
+                       base);
+}
+
+static Node* reconstruct_addition_tree(TermArray* arr) {
+    Node* result = NULL;
+
+    for (size_t i = 0; i < arr->count; i++) {
+        if (fabs(arr->items[i].coeff) < 1e-9) continue; // Omit 0.0 terms
+
+        Node* term_node = build_term_node(arr->items[i]);
+        if (!result) {
+            result = term_node;
+        } else {
+            result = create_node(NODE_ADD, 0, 0, result, term_node);
+        }
+    }
+
+    return result ? result : create_node(NODE_CONST, 0.0, 0, NULL, NULL);
+}
+
+// ============================================================================
+// 4. MAIN SIMPLIFIER ENTRY POINT
 // ============================================================================
 
 Node* simplify_tree(Node* node) {
     if (!node) return NULL;
 
+    // 1. Bottom-up post-order simplify children first
     node->left = simplify_tree(node->left);
     node->right = simplify_tree(node->right);
 
-    if (node->type == NODE_MUL) return simplify_mul(node);
-    if (node->type == NODE_ADD) return simplify_add(node);
+    // 2. Exponent simplification for NODE_MUL (x^a * x^b -> x^(a+b), x * x -> x^2)
+    if (node->type == NODE_MUL) {
+        Node* L = node->left;
+        Node* R = node->right;
+
+        // x * x -> x^2
+        if (L && R && L->type == NODE_VAR && R->type == NODE_VAR && L->var_name == R->var_name) {
+            char var = L->var_name;
+            free_tree(node);
+            return create_node(NODE_POW, 0, 0,
+                               create_node(NODE_VAR, 0, var, NULL, NULL),
+                               create_node(NODE_CONST, 2.0, 0, NULL, NULL));
+        }
+
+        // x^a * x^b -> x^(a+b)
+        if (L && R && L->type == NODE_POW && R->type == NODE_POW &&
+            L->left && R->left && L->left->type == NODE_VAR && R->left->type == NODE_VAR &&
+            L->left->var_name == R->left->var_name &&
+            L->right->type == NODE_CONST && R->right->type == NODE_CONST) {
+
+            double new_pow = L->right->val + R->right->val;
+            char var = L->left->var_name;
+            free_tree(node);
+            return create_node(NODE_POW, 0, 0,
+                               create_node(NODE_VAR, 0, var, NULL, NULL),
+                               create_node(NODE_CONST, new_pow, 0, NULL, NULL));
+        }
+    }
+
+    // 3. N-ary Linear Collector for NODE_ADD
+    if (node->type == NODE_ADD) {
+        TermArray arr = {0};
+        collect_addition_terms(node, &arr, 1.0);
+
+        Node* simplified = reconstruct_addition_tree(&arr);
+
+        free(arr.items);
+        free_tree(node); // Dispose old uncollected binary subtrees safely
+        return simplified;
+    }
 
     return node;
-}
+}   
 
 /* Helper to count nodes in an AST */
 static int count_nodes(Node* node) {
