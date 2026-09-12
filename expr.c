@@ -276,244 +276,187 @@ Node *integrate(Node *node, char var)
     }
 }
 
-// ============================================================================
-// 1. MATCHING HELPERS
-// ============================================================================
-
-static inline bool is_var(const Node *n, char var)
-{
-    return n && n->type == NODE_VAR && (var == 0 || n->var_name == var);
-}
-
-static inline bool is_const(const Node *n, double val, bool check_val)
-{
-    if (!n || n->type != NODE_CONST)
-        return false;
-    return check_val ? (n->val == val) : true;
-}
-
-static inline bool is_pow(const Node *n, char var, double exponent, bool check_exp)
-{
-    if (!n || n->type != NODE_POW)
-        return false;
-    if (!is_var(n->left, var))
-        return false;
-    return is_const(n->right, exponent, check_exp);
-}
 
 // ============================================================================
-// 2. BUILDER HELPERS
+// UNIFIED TERM COLLECTION & SIMPLIFICATION (PRESERVES ALL SUBTREES)
 // ============================================================================
 
-static inline Node *make_pow(char var, double exponent)
-{
-    return create_node(NODE_POW, 0, 0,
-                       create_node(NODE_VAR, 0, var, NULL, NULL),
-                       create_node(NODE_CONST, exponent, 0, NULL, NULL));
-}
+typedef enum {
+    TERM_CONST,     /* Bare constant c */
+    TERM_POLY,      /* Polynomial term c * x^n */
+    TERM_EXP_BASE,  /* Exponential term c * a^(k*x) */
+    TERM_EXP_NAT,   /* Natural exponential c * exp(x) */
+    TERM_CUSTOM     /* Unrecognized subtree (fallback - never dropped) */
+} TermType;
 
-static inline Node *make_mul_const(double coeff, Node *term)
-{
-    return create_node(NODE_MUL, 0, 0,
-                       create_node(NODE_CONST, coeff, 0, NULL, NULL),
-                       term);
-}
-
-// ============================================================================
-// 1. TERM COLLECTION STRUCTURES
-// ============================================================================
-
-typedef struct
-{
-    char var;        // Variable name ('x', 'y', or 0 for constant)
-    double exponent; // Exponent (1.0 for x, 0.0 for const, n for x^n)
-    double coeff;    // Aggregated numeric multiplier
+typedef struct {
+    TermType type;
+    double coeff;      /* Scalar multiplier c */
+    char var;          /* Variable identifier 'x' */
+    double exponent;   /* Power n in x^n */
+    double base;       /* Constant base a in a^(k*x) */
+    double var_coeff;  /* Exponent scale k in a^(k*x) */
+    Node* custom_node; /* AST subtree for fallback */
 } Term;
 
-typedef struct
-{
+typedef struct {
     Term *items;
     size_t count;
     size_t capacity;
 } TermArray;
 
-static void append_term(TermArray *arr, char var, double exp, double coeff)
-{
-    // Combine with an existing term if variable and power match
-    for (size_t i = 0; i < arr->count; i++)
-    {
-        if (arr->items[i].var == var && fabs(arr->items[i].exponent - exp) < 1e-9)
-        {
-            arr->items[i].coeff += coeff;
-            return;
+static void append_term_item(TermArray *arr, Term t) {
+    /* Aggregate coefficients for matching terms */
+    for (size_t i = 0; i < arr->count; i++) {
+        Term *existing = &arr->items[i];
+        if (existing->type == t.type) {
+            if (t.type == TERM_CONST) {
+                existing->coeff += t.coeff;
+                return;
+            }
+            if (t.type == TERM_POLY && existing->var == t.var && fabs(existing->exponent - t.exponent) < 1e-9) {
+                existing->coeff += t.coeff;
+                return;
+            }
+            if (t.type == TERM_EXP_BASE && existing->var == t.var && 
+                fabs(existing->base - t.base) < 1e-9 && fabs(existing->var_coeff - t.var_coeff) < 1e-9) {
+                existing->coeff += t.coeff;
+                return;
+            }
+            if (t.type == TERM_EXP_NAT && existing->var == t.var) {
+                existing->coeff += t.coeff;
+                return;
+            }
         }
     }
-    // Expand buffer if needed
-    if (arr->count >= arr->capacity)
-    {
+    if (arr->count >= arr->capacity) {
         arr->capacity = (arr->capacity == 0) ? 8 : arr->capacity * 2;
         arr->items = (Term *)realloc(arr->items, arr->capacity * sizeof(Term));
     }
-    arr->items[arr->count++] = (Term){.var = var, .exponent = exp, .coeff = coeff};
+    arr->items[arr->count++] = t;
 }
 
-// ============================================================================
-// 2. TREE FLATTENING (N-ARY ADDITION RECURSION)
-// ============================================================================
-static void collect_addition_terms(Node *node, TermArray *arr, double scale)
-{
-    if (!node)
-        return;
+static void collect_addition_terms(Node *node, TermArray *arr, double scale) {
+    if (!node) return;
 
-    // 1. Sub-addition -> Recurse down both sides
-    if (node->type == NODE_ADD)
-    {
+    if (node->type == NODE_ADD) {
         collect_addition_terms(node->left, arr, scale);
         collect_addition_terms(node->right, arr, scale);
         return;
     }
 
-    // 2. Scaled terms -> c * term
-    if (node->type == NODE_MUL && node->left && node->left->type == NODE_CONST)
-    {
-        double current_coeff = node->left->val * scale;
-        Node *term = node->right;
+    if (node->type == NODE_SUB) {
+        collect_addition_terms(node->left, arr, scale);
+        collect_addition_terms(node->right, arr, -scale);
+        return;
+    }
 
-        if (term->type == NODE_VAR)
-        {
-            append_term(arr, term->var_name, 1.0, current_coeff);
+    double c = scale;
+    Node *term = node;
+    if (node->type == NODE_MUL && node->left && node->left->type == NODE_CONST) {
+        c = node->left->val * scale;
+        term = node->right;
+    }
+
+    if (term->type == NODE_CONST) {
+        append_term_item(arr, (Term){ .type = TERM_CONST, .coeff = c * term->val });
+        return;
+    }
+
+    if (term->type == NODE_VAR) {
+        append_term_item(arr, (Term){ .type = TERM_POLY, .coeff = c, .var = term->var_name, .exponent = 1.0 });
+        return;
+    }
+
+    if (term->type == NODE_POW) {
+        /* Polynomial x^n */
+        if (term->left && term->left->type == NODE_VAR && term->right && term->right->type == NODE_CONST) {
+            append_term_item(arr, (Term){ .type = TERM_POLY, .coeff = c, .var = term->left->var_name, .exponent = term->right->val });
             return;
         }
-        // Polynomial power x^n
-        if (term->type == NODE_POW && term->left && term->left->type == NODE_VAR &&
-            term->right && term->right->type == NODE_CONST)
-        {
-            append_term(arr, term->left->var_name, term->right->val, current_coeff);
+        /* Constant base a^x */
+        if (term->left && term->left->type == NODE_CONST && term->right && term->right->type == NODE_VAR) {
+            append_term_item(arr, (Term){ .type = TERM_EXP_BASE, .coeff = c, .base = term->left->val, .var = term->right->var_name, .var_coeff = 1.0 });
             return;
         }
-        // Exponential b^x (e.g. c * 2^x)
-        if (term->type == NODE_POW && term->left && term->left->type == NODE_CONST &&
-            term->right && term->right->type == NODE_VAR)
-        {
-            // Encode base using offset: -1000 - base
-            append_term(arr, term->right->var_name, -1000.0 - term->left->val, current_coeff);
-            return;
-        }
-        // Natural exponential exp(x)
-        if (term->type == NODE_EXP && term->left && term->left->type == NODE_VAR)
-        {
-            append_term(arr, term->left->var_name, -999.0, current_coeff);
+        /* Constant base with scaled exponent a^(k*x) */
+        if (term->left && term->left->type == NODE_CONST && term->right && term->right->type == NODE_MUL &&
+            term->right->left && term->right->left->type == NODE_CONST &&
+            term->right->right && term->right->right->type == NODE_VAR) {
+            append_term_item(arr, (Term){ .type = TERM_EXP_BASE, .coeff = c, .base = term->left->val, .var = term->right->right->var_name, .var_coeff = term->right->left->val });
             return;
         }
     }
 
-    // 3. Standalone Exponential b^x (e.g. 2^x)
-    if (node->type == NODE_POW && node->left && node->left->type == NODE_CONST &&
-        node->right && node->right->type == NODE_VAR)
-    {
-        append_term(arr, node->right->var_name, -1000.0 - node->left->val, scale);
+    if (term->type == NODE_EXP && term->left && term->left->type == NODE_VAR) {
+        append_term_item(arr, (Term){ .type = TERM_EXP_NAT, .coeff = c, .var = term->left->var_name });
         return;
     }
 
-    // 4. Natural exponential exp(x)
-    if (node->type == NODE_EXP && node->left && node->left->type == NODE_VAR)
-    {
-        append_term(arr, node->left->var_name, -999.0, scale);
-        return;
-    }
-
-    // 5. Polynomial Power x^n
-    if (node->type == NODE_POW && node->left && node->left->type == NODE_VAR &&
-        node->right && node->right->type == NODE_CONST)
-    {
-        append_term(arr, node->left->var_name, node->right->val, scale);
-        return;
-    }
-
-    // 6. Single Variable x
-    if (node->type == NODE_VAR)
-    {
-        append_term(arr, node->var_name, 1.0, scale);
-        return;
-    }
-
-    // 7. Bare Constant
-    if (node->type == NODE_CONST)
-    {
-        append_term(arr, 0, 0.0, node->val * scale);
-        return;
-    }
+    /* Preserve unclassified subtrees without dropping them */
+    append_term_item(arr, (Term){ .type = TERM_CUSTOM, .coeff = c, .custom_node = copy_tree(term) });
 }
-// ============================================================================
-// 3. CANONICAL TREE RECONSTRUCTION
-// ============================================================================
 
-static Node *build_term_node(Term t)
-{
-    // Constant term
-    if (t.var == 0 || t.exponent == 0.0)
-    {
-        return create_node(NODE_CONST, t.coeff, 0, NULL, NULL);
-    }
+static Node* build_term_node(Term t) {
+    Node* base_node = NULL;
 
-    Node *base = NULL;
+    switch (t.type) {
+        case TERM_CONST:
+            return create_node(NODE_CONST, t.coeff, 0, NULL, NULL);
 
-    // Exponential term with constant base: b^x
-    if (t.exponent < -1000.0)
-    {
-        double const_base = -1000.0 - t.exponent;
-        base = create_node(NODE_POW, 0, 0,
-                           create_node(NODE_CONST, const_base, 0, NULL, NULL),
-                           create_node(NODE_VAR, 0, t.var, NULL, NULL));
-    }
-    // Natural Exponential: exp(x)
-    else if (fabs(t.exponent - (-999.0)) < 1e-9)
-    {
-        base = create_node(NODE_EXP, 0, 0,
-                           create_node(NODE_VAR, 0, t.var, NULL, NULL),
-                           NULL);
-    }
-    // Simple variable: x
-    else if (fabs(t.exponent - 1.0) < 1e-9)
-    {
-        base = create_node(NODE_VAR, 0, t.var, NULL, NULL);
-    }
-    // Polynomial power: x^n
-    else
-    {
-        base = create_node(NODE_POW, 0, 0,
-                           create_node(NODE_VAR, 0, t.var, NULL, NULL),
-                           create_node(NODE_CONST, t.exponent, 0, NULL, NULL));
-    }
+        case TERM_POLY:
+            if (fabs(t.exponent - 1.0) < 1e-9) {
+                base_node = create_node(NODE_VAR, 0, t.var, NULL, NULL);
+            } else {
+                base_node = create_node(NODE_POW, 0, 0,
+                                        create_node(NODE_VAR, 0, t.var, NULL, NULL),
+                                        create_node(NODE_CONST, t.exponent, 0, NULL, NULL));
+            }
+            break;
 
-    // Return term directly if coefficient is 1.0
-    if (fabs(t.coeff - 1.0) < 1e-9)
-    {
-        return base;
+        case TERM_EXP_BASE: {
+            Node* exp_node = NULL;
+            if (fabs(t.var_coeff - 1.0) < 1e-9) {
+                exp_node = create_node(NODE_VAR, 0, t.var, NULL, NULL);
+            } else {
+                exp_node = create_node(NODE_MUL, 0, 0,
+                                       create_node(NODE_CONST, t.var_coeff, 0, NULL, NULL),
+                                       create_node(NODE_VAR, 0, t.var, NULL, NULL));
+            }
+            base_node = create_node(NODE_POW, 0, 0,
+                                    create_node(NODE_CONST, t.base, 0, NULL, NULL),
+                                    exp_node);
+            break;
+        }
+
+        case TERM_EXP_NAT:
+            base_node = create_node(NODE_EXP, 0, 0,
+                                    create_node(NODE_VAR, 0, t.var, NULL, NULL),
+                                    NULL);
+            break;
+
+        case TERM_CUSTOM:
+            base_node = copy_tree(t.custom_node);
+            break;
     }
 
-    // Wrap with multiplier node: c * base
+    if (fabs(t.coeff - 1.0) < 1e-9) return base_node;
+
     return create_node(NODE_MUL, 0, 0,
                        create_node(NODE_CONST, t.coeff, 0, NULL, NULL),
-                       base);
+                       base_node);
 }
 
-static Node *reconstruct_addition_tree(TermArray *arr)
-{
+static Node *reconstruct_addition_tree(TermArray *arr) {
     Node *result = NULL;
 
-    for (size_t i = 0; i < arr->count; i++)
-    {
-        if (fabs(arr->items[i].coeff) < 1e-9)
-            continue; // Omit 0.0 terms
+    for (size_t i = 0; i < arr->count; i++) {
+        if (fabs(arr->items[i].coeff) < 1e-9) continue;
 
         Node *term_node = build_term_node(arr->items[i]);
-        if (!result)
-        {
+        if (!result) {
             result = term_node;
-        }
-        else
-        {
+        } else {
             result = create_node(NODE_ADD, 0, 0, result, term_node);
         }
     }
@@ -522,58 +465,64 @@ static Node *reconstruct_addition_tree(TermArray *arr)
 }
 
 // ============================================================================
-// MULTIPLICATION FLATTENING & RECONSTRUCTION (FIXED)
-// ============================================================================
-// ============================================================================
-// MULTIPLICATION FLATTENING & RECONSTRUCTION WITH BASE COMBINATION RULE
+// MULTIPLICATION FLATTENING & RECONSTRUCTION
 // ============================================================================
 
-typedef struct {
-    double base;            /* Constant base (e.g., 4.0 for 4^x) */
-    char var;               /* Variable in exponent ('x') */
-    double var_coeff;       /* Accumulated exponent multiplier */
-    Node* custom_node;      /* Stores arbitrary non-matching factors */
-} MulVariable;
+typedef enum {
+    MUL_POLY,     /* x^n */
+    MUL_EXP_BASE, /* a^(k*x) */
+    MUL_CUSTOM    /* Subtree factor */
+} MulType;
 
 typedef struct {
-    MulVariable* items;
+    MulType type;
+    char var;          
+    double exponent;   
+    double base;       
+    double var_coeff;  
+    Node* custom_node; 
+} MulItem;
+
+typedef struct {
+    MulItem* items;
     size_t count;
     size_t capacity;
 } MulVarArray;
 
-static void add_base_exponent(MulVarArray* arr, double base, char var, double exp_coeff) {
-    /* Combine exponents if the constant base and variable match: a^x * a^x -> a^(2x) */
+static void add_poly_exponent(MulVarArray* arr, char var, double exp) {
     for (size_t i = 0; i < arr->count; i++) {
-        if (!arr->items[i].custom_node && 
-            fabs(arr->items[i].base - base) < 1e-9 && 
-            arr->items[i].var == var) {
+        if (arr->items[i].type == MUL_POLY && arr->items[i].var == var) {
+            arr->items[i].exponent += exp;
+            return;
+        }
+    }
+    if (arr->count >= arr->capacity) {
+        arr->capacity = (arr->capacity == 0) ? 4 : arr->capacity * 2;
+        arr->items = (MulItem*)realloc(arr->items, arr->capacity * sizeof(MulItem));
+    }
+    arr->items[arr->count++] = (MulItem){ .type = MUL_POLY, .var = var, .exponent = exp };
+}
+
+static void add_base_exponent(MulVarArray* arr, double base, char var, double exp_coeff) {
+    for (size_t i = 0; i < arr->count; i++) {
+        if (arr->items[i].type == MUL_EXP_BASE && fabs(arr->items[i].base - base) < 1e-9 && arr->items[i].var == var) {
             arr->items[i].var_coeff += exp_coeff;
             return;
         }
     }
     if (arr->count >= arr->capacity) {
         arr->capacity = (arr->capacity == 0) ? 4 : arr->capacity * 2;
-        arr->items = (MulVariable*)realloc(arr->items, arr->capacity * sizeof(MulVariable));
+        arr->items = (MulItem*)realloc(arr->items, arr->capacity * sizeof(MulItem));
     }
-    arr->items[arr->count++] = (MulVariable){ 
-        .base = base, 
-        .var = var, 
-        .var_coeff = exp_coeff, 
-        .custom_node = NULL 
-    };
+    arr->items[arr->count++] = (MulItem){ .type = MUL_EXP_BASE, .base = base, .var = var, .var_coeff = exp_coeff };
 }
 
 static void add_custom_factor(MulVarArray* arr, Node* node) {
     if (arr->count >= arr->capacity) {
         arr->capacity = (arr->capacity == 0) ? 4 : arr->capacity * 2;
-        arr->items = (MulVariable*)realloc(arr->items, arr->capacity * sizeof(MulVariable));
+        arr->items = (MulItem*)realloc(arr->items, arr->capacity * sizeof(MulItem));
     }
-    arr->items[arr->count++] = (MulVariable){ 
-        .base = 0.0, 
-        .var = 0, 
-        .var_coeff = 0.0, 
-        .custom_node = copy_tree(node) 
-    };
+    arr->items[arr->count++] = (MulItem){ .type = MUL_CUSTOM, .custom_node = copy_tree(node) };
 }
 
 static void collect_multiplication_terms(Node* node, MulVarArray* vars, double* total_coeff) {
@@ -590,14 +539,23 @@ static void collect_multiplication_terms(Node* node, MulVarArray* vars, double* 
         return;
     }
 
-    /* Pattern 1: Constant base raised to a variable, e.g., 4^x */
+    if (node->type == NODE_VAR) {
+        add_poly_exponent(vars, node->var_name, 1.0);
+        return;
+    }
+
+    if (node->type == NODE_POW && node->left && node->left->type == NODE_VAR &&
+        node->right && node->right->type == NODE_CONST) {
+        add_poly_exponent(vars, node->left->var_name, node->right->val);
+        return;
+    }
+
     if (node->type == NODE_POW && node->left && node->left->type == NODE_CONST &&
         node->right && node->right->type == NODE_VAR) {
         add_base_exponent(vars, node->left->val, node->right->var_name, 1.0);
         return;
     }
 
-    /* Pattern 2: Constant base raised to scaled variable, e.g., 4^(c*x) */
     if (node->type == NODE_POW && node->left && node->left->type == NODE_CONST &&
         node->right && node->right->type == NODE_MUL &&
         node->right->left && node->right->left->type == NODE_CONST &&
@@ -606,7 +564,6 @@ static void collect_multiplication_terms(Node* node, MulVarArray* vars, double* 
         return;
     }
 
-    /* Preserve polynomial factors and unrecognized subtrees */
     add_custom_factor(vars, node);
 }
 
@@ -614,24 +571,35 @@ static Node* reconstruct_multiplication_tree(MulVarArray* vars, double total_coe
     Node* result = NULL;
 
     for (size_t i = 0; i < vars->count; i++) {
+        MulItem* item = &vars->items[i];
         Node* factor_node = NULL;
 
-        if (vars->items[i].custom_node) {
-            factor_node = copy_tree(vars->items[i].custom_node);
-        } else {
-            if (fabs(vars->items[i].var_coeff) < 1e-9) continue;
+        if (item->type == MUL_CUSTOM) {
+            factor_node = copy_tree(item->custom_node);
+        } else if (item->type == MUL_POLY) {
+            if (fabs(item->exponent) < 1e-9) continue;
+
+            if (fabs(item->exponent - 1.0) < 1e-9) {
+                factor_node = create_node(NODE_VAR, 0, item->var, NULL, NULL);
+            } else {
+                factor_node = create_node(NODE_POW, 0, 0,
+                                           create_node(NODE_VAR, 0, item->var, NULL, NULL),
+                                           create_node(NODE_CONST, item->exponent, 0, NULL, NULL));
+            }
+        } else if (item->type == MUL_EXP_BASE) {
+            if (fabs(item->var_coeff) < 1e-9) continue;
 
             Node* exponent_node = NULL;
-            if (fabs(vars->items[i].var_coeff - 1.0) < 1e-9) {
-                exponent_node = create_node(NODE_VAR, 0, vars->items[i].var, NULL, NULL);
+            if (fabs(item->var_coeff - 1.0) < 1e-9) {
+                exponent_node = create_node(NODE_VAR, 0, item->var, NULL, NULL);
             } else {
                 exponent_node = create_node(NODE_MUL, 0, 0,
-                                            create_node(NODE_CONST, vars->items[i].var_coeff, 0, NULL, NULL),
-                                            create_node(NODE_VAR, 0, vars->items[i].var, NULL, NULL));
+                                            create_node(NODE_CONST, item->var_coeff, 0, NULL, NULL),
+                                            create_node(NODE_VAR, 0, item->var, NULL, NULL));
             }
 
             factor_node = create_node(NODE_POW, 0, 0,
-                                      create_node(NODE_CONST, vars->items[i].base, 0, NULL, NULL),
+                                      create_node(NODE_CONST, item->base, 0, NULL, NULL),
                                       exponent_node);
         }
 
@@ -642,9 +610,7 @@ static Node* reconstruct_multiplication_tree(MulVarArray* vars, double total_coe
         }
     }
 
-    if (!result) {
-        return create_node(NODE_CONST, total_coeff, 0, NULL, NULL);
-    }
+    if (!result) return create_node(NODE_CONST, total_coeff, 0, NULL, NULL);
 
     if (fabs(total_coeff - 1.0) > 1e-9) {
         result = create_node(NODE_MUL, 0, 0,
@@ -655,51 +621,51 @@ static Node* reconstruct_multiplication_tree(MulVarArray* vars, double total_coe
     return result;
 }
 
-
 // ============================================================================
-// 4. MAIN SIMPLIFIER ENTRY POINT
+// MAIN SIMPLIFIER ENTRY POINT
 // ============================================================================
 
-Node *simplify_tree(Node *node)
-{
-    if (!node)
-        return NULL;
+Node *simplify_tree(Node *node) {
+    if (!node) return NULL;
 
-    // 1. Post-order bottom-up recursion
     node->left = simplify_tree(node->left);
     node->right = simplify_tree(node->right);
 
-    // 2. Addition Collector
-    if (node->type == NODE_ADD)
-    {
+    if (node->type == NODE_ADD || node->type == NODE_SUB) {
         TermArray arr = {0};
         collect_addition_terms(node, &arr, 1.0);
-
         Node *simplified = reconstruct_addition_tree(&arr);
 
+        for (size_t i = 0; i < arr.count; i++) {
+            if (arr.items[i].type == TERM_CUSTOM && arr.items[i].custom_node) {
+                free_tree(arr.items[i].custom_node);
+            }
+        }
         free(arr.items);
         free_tree(node);
         return simplified;
     }
 
-    // 3. Multiplication Collector
     if (node->type == NODE_MUL) {
         MulVarArray vars = {0};
         double total_coeff = 1.0;
-
         collect_multiplication_terms(node, &vars, &total_coeff);
         
         if (vars.count > 0 || fabs(total_coeff - 1.0) > 1e-9) {
             Node* simplified = reconstruct_multiplication_tree(&vars, total_coeff);
             for (size_t i = 0; i < vars.count; i++) {
-                if (vars.items[i].custom_node) free_tree(vars.items[i].custom_node);
+                if (vars.items[i].type == MUL_CUSTOM && vars.items[i].custom_node) {
+                    free_tree(vars.items[i].custom_node);
+                }
             }
             free(vars.items);
             free_tree(node);
             return simplified;
         }
         for (size_t i = 0; i < vars.count; i++) {
-            if (vars.items[i].custom_node) free_tree(vars.items[i].custom_node);
+            if (vars.items[i].type == MUL_CUSTOM && vars.items[i].custom_node) {
+                free_tree(vars.items[i].custom_node);
+            }
         }
         free(vars.items);
     }
