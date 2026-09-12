@@ -16,7 +16,9 @@ typedef enum {
     NODE_MUL,
     NODE_DIV,
     NODE_POW,
-    NODE_EXP
+    NODE_EXP,
+    NODE_SIN,
+    NODE_COS
 } NodeType;
 
 /* Expression Tree (AST) Node Structure */

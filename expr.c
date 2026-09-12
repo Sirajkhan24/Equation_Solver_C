@@ -58,6 +58,10 @@ double evaluate(Node *node, double x_val)
         return pow(evaluate(node->left, x_val), evaluate(node->right, x_val));
     case NODE_EXP:
         return exp(evaluate(node->left, x_val));
+    case NODE_SIN:
+        return sin(evaluate(node->left, x_val));
+    case NODE_COS:
+        return cos(evaluate(node->left, x_val));
     default:
         return 0.0;
     }
@@ -157,6 +161,20 @@ Node *differentiate(Node *node, char var)
         }
 
         return create_node(NODE_CONST, 0.0, 0, NULL, NULL);
+
+    case NODE_SIN:
+        /* d/dx(sin(u)) = cos(u) * u' */
+        return create_node(NODE_MUL, 0, 0,
+                           create_node(NODE_COS, 0, 0, copy_tree(node->left), NULL),
+                           differentiate(node->left, var));
+
+    case NODE_COS:
+        /* d/dx(cos(u)) = -1 * sin(u) * u' */
+        return create_node(NODE_MUL, 0, 0,
+                           create_node(NODE_MUL, 0, 0,
+                                       create_node(NODE_CONST, -1.0, 0, NULL, NULL),
+                                       create_node(NODE_SIN, 0, 0, copy_tree(node->left), NULL)),
+                           differentiate(node->left, var));
 
     default:
         return NULL;
@@ -276,76 +294,90 @@ Node *integrate(Node *node, char var)
     }
 }
 
-
 // ============================================================================
 // UNIFIED TERM COLLECTION & SIMPLIFICATION (PRESERVES ALL SUBTREES)
 // ============================================================================
 
-typedef enum {
-    TERM_CONST,     /* Bare constant c */
-    TERM_POLY,      /* Polynomial term c * x^n */
-    TERM_EXP_BASE,  /* Exponential term c * a^(k*x) */
-    TERM_EXP_NAT,   /* Natural exponential c * exp(x) */
-    TERM_CUSTOM     /* Unrecognized subtree (fallback - never dropped) */
+typedef enum
+{
+    TERM_CONST,    /* Bare constant c */
+    TERM_POLY,     /* Polynomial term c * x^n */
+    TERM_EXP_BASE, /* Exponential term c * a^(k*x) */
+    TERM_EXP_NAT,  /* Natural exponential c * exp(x) */
+    TERM_CUSTOM    /* Unrecognized subtree (fallback - never dropped) */
 } TermType;
 
-typedef struct {
+typedef struct
+{
     TermType type;
     double coeff;      /* Scalar multiplier c */
     char var;          /* Variable identifier 'x' */
     double exponent;   /* Power n in x^n */
     double base;       /* Constant base a in a^(k*x) */
     double var_coeff;  /* Exponent scale k in a^(k*x) */
-    Node* custom_node; /* AST subtree for fallback */
+    Node *custom_node; /* AST subtree for fallback */
 } Term;
 
-typedef struct {
+typedef struct
+{
     Term *items;
     size_t count;
     size_t capacity;
 } TermArray;
 
-static void append_term_item(TermArray *arr, Term t) {
+static void append_term_item(TermArray *arr, Term t)
+{
     /* Aggregate coefficients for matching terms */
-    for (size_t i = 0; i < arr->count; i++) {
+    for (size_t i = 0; i < arr->count; i++)
+    {
         Term *existing = &arr->items[i];
-        if (existing->type == t.type) {
-            if (t.type == TERM_CONST) {
+        if (existing->type == t.type)
+        {
+            if (t.type == TERM_CONST)
+            {
                 existing->coeff += t.coeff;
                 return;
             }
-            if (t.type == TERM_POLY && existing->var == t.var && fabs(existing->exponent - t.exponent) < 1e-9) {
+            if (t.type == TERM_POLY && existing->var == t.var && fabs(existing->exponent - t.exponent) < 1e-9)
+            {
                 existing->coeff += t.coeff;
                 return;
             }
-            if (t.type == TERM_EXP_BASE && existing->var == t.var && 
-                fabs(existing->base - t.base) < 1e-9 && fabs(existing->var_coeff - t.var_coeff) < 1e-9) {
+            if (t.type == TERM_EXP_BASE && existing->var == t.var &&
+                fabs(existing->base - t.base) < 1e-9 && fabs(existing->var_coeff - t.var_coeff) < 1e-9)
+            {
                 existing->coeff += t.coeff;
                 return;
             }
-            if (t.type == TERM_EXP_NAT && existing->var == t.var) {
+            if (t.type == TERM_EXP_NAT && existing->var == t.var)
+            {
                 existing->coeff += t.coeff;
                 return;
             }
         }
     }
-    if (arr->count >= arr->capacity) {
+    if (arr->count >= arr->capacity)
+    {
         arr->capacity = (arr->capacity == 0) ? 8 : arr->capacity * 2;
         arr->items = (Term *)realloc(arr->items, arr->capacity * sizeof(Term));
     }
     arr->items[arr->count++] = t;
 }
 
-static void collect_addition_terms(Node *node, TermArray *arr, double scale) {
-    if (!node) return;
+static void collect_addition_terms(Node *node, TermArray *arr, double scale)
+{
+    if (!node)
+        return;
 
-    if (node->type == NODE_ADD) {
+    if (node->type == NODE_ADD)
+    {
         collect_addition_terms(node->left, arr, scale);
         collect_addition_terms(node->right, arr, scale);
         return;
     }
 
-    if (node->type == NODE_SUB) {
+    if (node->type == NODE_SUB)
+    {
         collect_addition_terms(node->left, arr, scale);
         collect_addition_terms(node->right, arr, -scale);
         return;
@@ -353,110 +385,134 @@ static void collect_addition_terms(Node *node, TermArray *arr, double scale) {
 
     double c = scale;
     Node *term = node;
-    if (node->type == NODE_MUL && node->left && node->left->type == NODE_CONST) {
+    if (node->type == NODE_MUL && node->left && node->left->type == NODE_CONST)
+    {
         c = node->left->val * scale;
         term = node->right;
     }
 
-    if (term->type == NODE_CONST) {
-        append_term_item(arr, (Term){ .type = TERM_CONST, .coeff = c * term->val });
+    if (term->type == NODE_CONST)
+    {
+        append_term_item(arr, (Term){.type = TERM_CONST, .coeff = c * term->val});
         return;
     }
 
-    if (term->type == NODE_VAR) {
-        append_term_item(arr, (Term){ .type = TERM_POLY, .coeff = c, .var = term->var_name, .exponent = 1.0 });
+    if (term->type == NODE_VAR)
+    {
+        append_term_item(arr, (Term){.type = TERM_POLY, .coeff = c, .var = term->var_name, .exponent = 1.0});
         return;
     }
 
-    if (term->type == NODE_POW) {
+    if (term->type == NODE_POW)
+    {
         /* Polynomial x^n */
-        if (term->left && term->left->type == NODE_VAR && term->right && term->right->type == NODE_CONST) {
-            append_term_item(arr, (Term){ .type = TERM_POLY, .coeff = c, .var = term->left->var_name, .exponent = term->right->val });
+        if (term->left && term->left->type == NODE_VAR && term->right && term->right->type == NODE_CONST)
+        {
+            append_term_item(arr, (Term){.type = TERM_POLY, .coeff = c, .var = term->left->var_name, .exponent = term->right->val});
             return;
         }
         /* Constant base a^x */
-        if (term->left && term->left->type == NODE_CONST && term->right && term->right->type == NODE_VAR) {
-            append_term_item(arr, (Term){ .type = TERM_EXP_BASE, .coeff = c, .base = term->left->val, .var = term->right->var_name, .var_coeff = 1.0 });
+        if (term->left && term->left->type == NODE_CONST && term->right && term->right->type == NODE_VAR)
+        {
+            append_term_item(arr, (Term){.type = TERM_EXP_BASE, .coeff = c, .base = term->left->val, .var = term->right->var_name, .var_coeff = 1.0});
             return;
         }
         /* Constant base with scaled exponent a^(k*x) */
         if (term->left && term->left->type == NODE_CONST && term->right && term->right->type == NODE_MUL &&
             term->right->left && term->right->left->type == NODE_CONST &&
-            term->right->right && term->right->right->type == NODE_VAR) {
-            append_term_item(arr, (Term){ .type = TERM_EXP_BASE, .coeff = c, .base = term->left->val, .var = term->right->right->var_name, .var_coeff = term->right->left->val });
+            term->right->right && term->right->right->type == NODE_VAR)
+        {
+            append_term_item(arr, (Term){.type = TERM_EXP_BASE, .coeff = c, .base = term->left->val, .var = term->right->right->var_name, .var_coeff = term->right->left->val});
             return;
         }
     }
 
-    if (term->type == NODE_EXP && term->left && term->left->type == NODE_VAR) {
-        append_term_item(arr, (Term){ .type = TERM_EXP_NAT, .coeff = c, .var = term->left->var_name });
+    if (term->type == NODE_EXP && term->left && term->left->type == NODE_VAR)
+    {
+        append_term_item(arr, (Term){.type = TERM_EXP_NAT, .coeff = c, .var = term->left->var_name});
         return;
     }
 
     /* Preserve unclassified subtrees without dropping them */
-    append_term_item(arr, (Term){ .type = TERM_CUSTOM, .coeff = c, .custom_node = copy_tree(term) });
+    append_term_item(arr, (Term){.type = TERM_CUSTOM, .coeff = c, .custom_node = copy_tree(term)});
 }
 
-static Node* build_term_node(Term t) {
-    Node* base_node = NULL;
+static Node *build_term_node(Term t)
+{
+    Node *base_node = NULL;
 
-    switch (t.type) {
-        case TERM_CONST:
-            return create_node(NODE_CONST, t.coeff, 0, NULL, NULL);
+    switch (t.type)
+    {
+    case TERM_CONST:
+        return create_node(NODE_CONST, t.coeff, 0, NULL, NULL);
 
-        case TERM_POLY:
-            if (fabs(t.exponent - 1.0) < 1e-9) {
-                base_node = create_node(NODE_VAR, 0, t.var, NULL, NULL);
-            } else {
-                base_node = create_node(NODE_POW, 0, 0,
-                                        create_node(NODE_VAR, 0, t.var, NULL, NULL),
-                                        create_node(NODE_CONST, t.exponent, 0, NULL, NULL));
-            }
-            break;
-
-        case TERM_EXP_BASE: {
-            Node* exp_node = NULL;
-            if (fabs(t.var_coeff - 1.0) < 1e-9) {
-                exp_node = create_node(NODE_VAR, 0, t.var, NULL, NULL);
-            } else {
-                exp_node = create_node(NODE_MUL, 0, 0,
-                                       create_node(NODE_CONST, t.var_coeff, 0, NULL, NULL),
-                                       create_node(NODE_VAR, 0, t.var, NULL, NULL));
-            }
-            base_node = create_node(NODE_POW, 0, 0,
-                                    create_node(NODE_CONST, t.base, 0, NULL, NULL),
-                                    exp_node);
-            break;
+    case TERM_POLY:
+        if (fabs(t.exponent - 1.0) < 1e-9)
+        {
+            base_node = create_node(NODE_VAR, 0, t.var, NULL, NULL);
         }
-
-        case TERM_EXP_NAT:
-            base_node = create_node(NODE_EXP, 0, 0,
+        else
+        {
+            base_node = create_node(NODE_POW, 0, 0,
                                     create_node(NODE_VAR, 0, t.var, NULL, NULL),
-                                    NULL);
-            break;
+                                    create_node(NODE_CONST, t.exponent, 0, NULL, NULL));
+        }
+        break;
 
-        case TERM_CUSTOM:
-            base_node = copy_tree(t.custom_node);
-            break;
+    case TERM_EXP_BASE:
+    {
+        Node *exp_node = NULL;
+        if (fabs(t.var_coeff - 1.0) < 1e-9)
+        {
+            exp_node = create_node(NODE_VAR, 0, t.var, NULL, NULL);
+        }
+        else
+        {
+            exp_node = create_node(NODE_MUL, 0, 0,
+                                   create_node(NODE_CONST, t.var_coeff, 0, NULL, NULL),
+                                   create_node(NODE_VAR, 0, t.var, NULL, NULL));
+        }
+        base_node = create_node(NODE_POW, 0, 0,
+                                create_node(NODE_CONST, t.base, 0, NULL, NULL),
+                                exp_node);
+        break;
     }
 
-    if (fabs(t.coeff - 1.0) < 1e-9) return base_node;
+    case TERM_EXP_NAT:
+        base_node = create_node(NODE_EXP, 0, 0,
+                                create_node(NODE_VAR, 0, t.var, NULL, NULL),
+                                NULL);
+        break;
+
+    case TERM_CUSTOM:
+        base_node = copy_tree(t.custom_node);
+        break;
+    }
+
+    if (fabs(t.coeff - 1.0) < 1e-9)
+        return base_node;
 
     return create_node(NODE_MUL, 0, 0,
                        create_node(NODE_CONST, t.coeff, 0, NULL, NULL),
                        base_node);
 }
 
-static Node *reconstruct_addition_tree(TermArray *arr) {
+static Node *reconstruct_addition_tree(TermArray *arr)
+{
     Node *result = NULL;
 
-    for (size_t i = 0; i < arr->count; i++) {
-        if (fabs(arr->items[i].coeff) < 1e-9) continue;
+    for (size_t i = 0; i < arr->count; i++)
+    {
+        if (fabs(arr->items[i].coeff) < 1e-9)
+            continue;
 
         Node *term_node = build_term_node(arr->items[i]);
-        if (!result) {
+        if (!result)
+        {
             result = term_node;
-        } else {
+        }
+        else
+        {
             result = create_node(NODE_ADD, 0, 0, result, term_node);
         }
     }
@@ -468,90 +524,110 @@ static Node *reconstruct_addition_tree(TermArray *arr) {
 // MULTIPLICATION FLATTENING & RECONSTRUCTION
 // ============================================================================
 
-typedef enum {
+typedef enum
+{
     MUL_POLY,     /* x^n */
     MUL_EXP_BASE, /* a^(k*x) */
     MUL_CUSTOM    /* Subtree factor */
 } MulType;
 
-typedef struct {
+typedef struct
+{
     MulType type;
-    char var;          
-    double exponent;   
-    double base;       
-    double var_coeff;  
-    Node* custom_node; 
+    char var;
+    double exponent;
+    double base;
+    double var_coeff;
+    Node *custom_node;
 } MulItem;
 
-typedef struct {
-    MulItem* items;
+typedef struct
+{
+    MulItem *items;
     size_t count;
     size_t capacity;
 } MulVarArray;
 
-static void add_poly_exponent(MulVarArray* arr, char var, double exp) {
-    for (size_t i = 0; i < arr->count; i++) {
-        if (arr->items[i].type == MUL_POLY && arr->items[i].var == var) {
+static void add_poly_exponent(MulVarArray *arr, char var, double exp)
+{
+    for (size_t i = 0; i < arr->count; i++)
+    {
+        if (arr->items[i].type == MUL_POLY && arr->items[i].var == var)
+        {
             arr->items[i].exponent += exp;
             return;
         }
     }
-    if (arr->count >= arr->capacity) {
+    if (arr->count >= arr->capacity)
+    {
         arr->capacity = (arr->capacity == 0) ? 4 : arr->capacity * 2;
-        arr->items = (MulItem*)realloc(arr->items, arr->capacity * sizeof(MulItem));
+        arr->items = (MulItem *)realloc(arr->items, arr->capacity * sizeof(MulItem));
     }
-    arr->items[arr->count++] = (MulItem){ .type = MUL_POLY, .var = var, .exponent = exp };
+    arr->items[arr->count++] = (MulItem){.type = MUL_POLY, .var = var, .exponent = exp};
 }
 
-static void add_base_exponent(MulVarArray* arr, double base, char var, double exp_coeff) {
-    for (size_t i = 0; i < arr->count; i++) {
-        if (arr->items[i].type == MUL_EXP_BASE && fabs(arr->items[i].base - base) < 1e-9 && arr->items[i].var == var) {
+static void add_base_exponent(MulVarArray *arr, double base, char var, double exp_coeff)
+{
+    for (size_t i = 0; i < arr->count; i++)
+    {
+        if (arr->items[i].type == MUL_EXP_BASE && fabs(arr->items[i].base - base) < 1e-9 && arr->items[i].var == var)
+        {
             arr->items[i].var_coeff += exp_coeff;
             return;
         }
     }
-    if (arr->count >= arr->capacity) {
+    if (arr->count >= arr->capacity)
+    {
         arr->capacity = (arr->capacity == 0) ? 4 : arr->capacity * 2;
-        arr->items = (MulItem*)realloc(arr->items, arr->capacity * sizeof(MulItem));
+        arr->items = (MulItem *)realloc(arr->items, arr->capacity * sizeof(MulItem));
     }
-    arr->items[arr->count++] = (MulItem){ .type = MUL_EXP_BASE, .base = base, .var = var, .var_coeff = exp_coeff };
+    arr->items[arr->count++] = (MulItem){.type = MUL_EXP_BASE, .base = base, .var = var, .var_coeff = exp_coeff};
 }
 
-static void add_custom_factor(MulVarArray* arr, Node* node) {
-    if (arr->count >= arr->capacity) {
+static void add_custom_factor(MulVarArray *arr, Node *node)
+{
+    if (arr->count >= arr->capacity)
+    {
         arr->capacity = (arr->capacity == 0) ? 4 : arr->capacity * 2;
-        arr->items = (MulItem*)realloc(arr->items, arr->capacity * sizeof(MulItem));
+        arr->items = (MulItem *)realloc(arr->items, arr->capacity * sizeof(MulItem));
     }
-    arr->items[arr->count++] = (MulItem){ .type = MUL_CUSTOM, .custom_node = copy_tree(node) };
+    arr->items[arr->count++] = (MulItem){.type = MUL_CUSTOM, .custom_node = copy_tree(node)};
 }
 
-static void collect_multiplication_terms(Node* node, MulVarArray* vars, double* total_coeff) {
-    if (!node) return;
+static void collect_multiplication_terms(Node *node, MulVarArray *vars, double *total_coeff)
+{
+    if (!node)
+        return;
 
-    if (node->type == NODE_MUL) {
+    if (node->type == NODE_MUL)
+    {
         collect_multiplication_terms(node->left, vars, total_coeff);
         collect_multiplication_terms(node->right, vars, total_coeff);
         return;
     }
 
-    if (node->type == NODE_CONST) {
+    if (node->type == NODE_CONST)
+    {
         *total_coeff *= node->val;
         return;
     }
 
-    if (node->type == NODE_VAR) {
+    if (node->type == NODE_VAR)
+    {
         add_poly_exponent(vars, node->var_name, 1.0);
         return;
     }
 
     if (node->type == NODE_POW && node->left && node->left->type == NODE_VAR &&
-        node->right && node->right->type == NODE_CONST) {
+        node->right && node->right->type == NODE_CONST)
+    {
         add_poly_exponent(vars, node->left->var_name, node->right->val);
         return;
     }
 
     if (node->type == NODE_POW && node->left && node->left->type == NODE_CONST &&
-        node->right && node->right->type == NODE_VAR) {
+        node->right && node->right->type == NODE_VAR)
+    {
         add_base_exponent(vars, node->left->val, node->right->var_name, 1.0);
         return;
     }
@@ -559,7 +635,8 @@ static void collect_multiplication_terms(Node* node, MulVarArray* vars, double* 
     if (node->type == NODE_POW && node->left && node->left->type == NODE_CONST &&
         node->right && node->right->type == NODE_MUL &&
         node->right->left && node->right->left->type == NODE_CONST &&
-        node->right->right && node->right->right->type == NODE_VAR) {
+        node->right->right && node->right->right->type == NODE_VAR)
+    {
         add_base_exponent(vars, node->left->val, node->right->right->var_name, node->right->left->val);
         return;
     }
@@ -567,32 +644,47 @@ static void collect_multiplication_terms(Node* node, MulVarArray* vars, double* 
     add_custom_factor(vars, node);
 }
 
-static Node* reconstruct_multiplication_tree(MulVarArray* vars, double total_coeff) {
-    Node* result = NULL;
+static Node *reconstruct_multiplication_tree(MulVarArray *vars, double total_coeff)
+{
+    Node *result = NULL;
 
-    for (size_t i = 0; i < vars->count; i++) {
-        MulItem* item = &vars->items[i];
-        Node* factor_node = NULL;
+    for (size_t i = 0; i < vars->count; i++)
+    {
+        MulItem *item = &vars->items[i];
+        Node *factor_node = NULL;
 
-        if (item->type == MUL_CUSTOM) {
+        if (item->type == MUL_CUSTOM)
+        {
             factor_node = copy_tree(item->custom_node);
-        } else if (item->type == MUL_POLY) {
-            if (fabs(item->exponent) < 1e-9) continue;
+        }
+        else if (item->type == MUL_POLY)
+        {
+            if (fabs(item->exponent) < 1e-9)
+                continue;
 
-            if (fabs(item->exponent - 1.0) < 1e-9) {
+            if (fabs(item->exponent - 1.0) < 1e-9)
+            {
                 factor_node = create_node(NODE_VAR, 0, item->var, NULL, NULL);
-            } else {
-                factor_node = create_node(NODE_POW, 0, 0,
-                                           create_node(NODE_VAR, 0, item->var, NULL, NULL),
-                                           create_node(NODE_CONST, item->exponent, 0, NULL, NULL));
             }
-        } else if (item->type == MUL_EXP_BASE) {
-            if (fabs(item->var_coeff) < 1e-9) continue;
+            else
+            {
+                factor_node = create_node(NODE_POW, 0, 0,
+                                          create_node(NODE_VAR, 0, item->var, NULL, NULL),
+                                          create_node(NODE_CONST, item->exponent, 0, NULL, NULL));
+            }
+        }
+        else if (item->type == MUL_EXP_BASE)
+        {
+            if (fabs(item->var_coeff) < 1e-9)
+                continue;
 
-            Node* exponent_node = NULL;
-            if (fabs(item->var_coeff - 1.0) < 1e-9) {
+            Node *exponent_node = NULL;
+            if (fabs(item->var_coeff - 1.0) < 1e-9)
+            {
                 exponent_node = create_node(NODE_VAR, 0, item->var, NULL, NULL);
-            } else {
+            }
+            else
+            {
                 exponent_node = create_node(NODE_MUL, 0, 0,
                                             create_node(NODE_CONST, item->var_coeff, 0, NULL, NULL),
                                             create_node(NODE_VAR, 0, item->var, NULL, NULL));
@@ -603,16 +695,21 @@ static Node* reconstruct_multiplication_tree(MulVarArray* vars, double total_coe
                                       exponent_node);
         }
 
-        if (!result) {
+        if (!result)
+        {
             result = factor_node;
-        } else {
+        }
+        else
+        {
             result = create_node(NODE_MUL, 0, 0, result, factor_node);
         }
     }
 
-    if (!result) return create_node(NODE_CONST, total_coeff, 0, NULL, NULL);
+    if (!result)
+        return create_node(NODE_CONST, total_coeff, 0, NULL, NULL);
 
-    if (fabs(total_coeff - 1.0) > 1e-9) {
+    if (fabs(total_coeff - 1.0) > 1e-9)
+    {
         result = create_node(NODE_MUL, 0, 0,
                              create_node(NODE_CONST, total_coeff, 0, NULL, NULL),
                              result);
@@ -625,19 +722,24 @@ static Node* reconstruct_multiplication_tree(MulVarArray* vars, double total_coe
 // MAIN SIMPLIFIER ENTRY POINT
 // ============================================================================
 
-Node *simplify_tree(Node *node) {
-    if (!node) return NULL;
+Node *simplify_tree(Node *node)
+{
+    if (!node)
+        return NULL;
 
     node->left = simplify_tree(node->left);
     node->right = simplify_tree(node->right);
 
-    if (node->type == NODE_ADD || node->type == NODE_SUB) {
+    if (node->type == NODE_ADD || node->type == NODE_SUB)
+    {
         TermArray arr = {0};
         collect_addition_terms(node, &arr, 1.0);
         Node *simplified = reconstruct_addition_tree(&arr);
 
-        for (size_t i = 0; i < arr.count; i++) {
-            if (arr.items[i].type == TERM_CUSTOM && arr.items[i].custom_node) {
+        for (size_t i = 0; i < arr.count; i++)
+        {
+            if (arr.items[i].type == TERM_CUSTOM && arr.items[i].custom_node)
+            {
                 free_tree(arr.items[i].custom_node);
             }
         }
@@ -646,15 +748,19 @@ Node *simplify_tree(Node *node) {
         return simplified;
     }
 
-    if (node->type == NODE_MUL) {
+    if (node->type == NODE_MUL)
+    {
         MulVarArray vars = {0};
         double total_coeff = 1.0;
         collect_multiplication_terms(node, &vars, &total_coeff);
-        
-        if (vars.count > 0 || fabs(total_coeff - 1.0) > 1e-9) {
-            Node* simplified = reconstruct_multiplication_tree(&vars, total_coeff);
-            for (size_t i = 0; i < vars.count; i++) {
-                if (vars.items[i].type == MUL_CUSTOM && vars.items[i].custom_node) {
+
+        if (vars.count > 0 || fabs(total_coeff - 1.0) > 1e-9)
+        {
+            Node *simplified = reconstruct_multiplication_tree(&vars, total_coeff);
+            for (size_t i = 0; i < vars.count; i++)
+            {
+                if (vars.items[i].type == MUL_CUSTOM && vars.items[i].custom_node)
+                {
                     free_tree(vars.items[i].custom_node);
                 }
             }
@@ -662,8 +768,10 @@ Node *simplify_tree(Node *node) {
             free_tree(node);
             return simplified;
         }
-        for (size_t i = 0; i < vars.count; i++) {
-            if (vars.items[i].type == MUL_CUSTOM && vars.items[i].custom_node) {
+        for (size_t i = 0; i < vars.count; i++)
+        {
+            if (vars.items[i].type == MUL_CUSTOM && vars.items[i].custom_node)
+            {
                 free_tree(vars.items[i].custom_node);
             }
         }
@@ -739,6 +847,16 @@ void print_inorder(Node *node)
         break;
     case NODE_POW:
         printf("^");
+        break;
+    case NODE_SIN:
+        printf("sin(");
+        print_inorder(node->left);
+        printf(")");
+        break;
+    case NODE_COS:
+        printf("cos(");
+        print_inorder(node->left);
+        printf(")");
         break;
     default:
         break;

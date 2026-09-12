@@ -27,7 +27,7 @@ static int precedence(char op) {
         case '+': case '-': return 1;
         case '*': case '/': return 2;
         case '^':          return 3;
-        case 'e':          return 4; /* exp function */
+        case 'e': case 's': case 'c': return 4; /* exp, sin, cos */
         default:           return 0;
     }
 }
@@ -50,9 +50,10 @@ static NodeType char_to_nodetype(char op) {
 
 static void process_operator(OpStack* op_stack, NodeStack* node_stack) {
     char op = pop_op(op_stack);
-    if (op == 'e') {
+    if (op == 'e' || op == 's' || op == 'c') {
         Node* arg = pop_node(node_stack);
-        push_node(node_stack, create_node(NODE_EXP, 0, 0, arg, NULL));
+        NodeType t = (op == 'e') ? NODE_EXP : (op == 's') ? NODE_SIN : NODE_COS;
+        push_node(node_stack, create_node(t, 0, 0, arg, NULL));
     } else {
         Node* right = pop_node(node_stack);
         Node* left = pop_node(node_stack);
@@ -66,12 +67,8 @@ Node* parse_expression(const char* expr) {
     int i = 0;
 
     while (expr[i] != '\0') {
-        if (isspace(expr[i])) {
-            i++;
-            continue;
-        }
+        if (isspace(expr[i])) { i++; continue; }
 
-        /* Parse Numbers (Constants) */
         if (isdigit(expr[i]) || expr[i] == '.') {
             char* endptr;
             double val = strtod(&expr[i], &endptr);
@@ -80,37 +77,28 @@ Node* parse_expression(const char* expr) {
             continue;
         }
 
-        /* Parse 'exp(' function */
-        if (strncmp(&expr[i], "exp", 3) == 0) {
-            push_op(&op_stack, 'e');
-            i += 3;
-            continue;
-        }
+        /* Parse Trigonometric & Exponential Functions */
+        if (strncmp(&expr[i], "exp", 3) == 0) { push_op(&op_stack, 'e'); i += 3; continue; }
+        if (strncmp(&expr[i], "sin", 3) == 0) { push_op(&op_stack, 's'); i += 3; continue; }
+        if (strncmp(&expr[i], "cos", 3) == 0) { push_op(&op_stack, 'c'); i += 3; continue; }
 
-        /* Parse Variables (e.g. 'x') */
         if (isalpha(expr[i])) {
             push_node(&node_stack, create_node(NODE_VAR, 0, expr[i], NULL, NULL));
             i++;
             continue;
         }
 
-        /* Parentheses */
-        if (expr[i] == '(') {
-            push_op(&op_stack, '(');
-            i++;
-            continue;
-        }
+        if (expr[i] == '(') { push_op(&op_stack, '('); i++; continue; }
 
         if (expr[i] == ')') {
             while (op_stack.top >= 0 && peek_op(&op_stack) != '(') {
                 process_operator(&op_stack, &node_stack);
             }
-            if (op_stack.top >= 0) pop_op(&op_stack); /* Pop '(' */
+            if (op_stack.top >= 0) pop_op(&op_stack);
             i++;
             continue;
         }
 
-        /* Operators */
         if (strchr("+-*/^", expr[i])) {
             char current_op = expr[i];
             while (op_stack.top >= 0 && peek_op(&op_stack) != '(' &&
