@@ -811,9 +811,24 @@ void print_inorder(Node *node)
     if (!node)
         return;
 
+    /* Handle unary function nodes before binary infix printing */
     if (node->type == NODE_EXP)
     {
         printf("exp(");
+        print_inorder(node->left);
+        printf(")");
+        return;
+    }
+    if (node->type == NODE_SIN)
+    {
+        printf("sin(");
+        print_inorder(node->left);
+        printf(")");
+        return;
+    }
+    if (node->type == NODE_COS)
+    {
+        printf("cos(");
         print_inorder(node->left);
         printf(")");
         return;
@@ -847,16 +862,6 @@ void print_inorder(Node *node)
         break;
     case NODE_POW:
         printf("^");
-        break;
-    case NODE_SIN:
-        printf("sin(");
-        print_inorder(node->left);
-        printf(")");
-        break;
-    case NODE_COS:
-        printf("cos(");
-        print_inorder(node->left);
-        printf(")");
         break;
     default:
         break;

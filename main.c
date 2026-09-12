@@ -13,7 +13,7 @@ int main(void) {
 
     
     // 1. Define initial equation string f(x)
-    const char* original_str = "sin(x) + sin x + cos(x)";
+    const char* original_str = "cos(x)";
     double test_x = 2.0;
 
     // 2. Parse string into AST f(x) and simplify initial structure
